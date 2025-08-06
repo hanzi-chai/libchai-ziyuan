@@ -149,6 +149,14 @@ struct 原始固定拆分项 {
 
 type 原始固定拆分 = Vec<原始固定拆分项>;
 type 原始动态拆分 = FxHashMap<String, Vec<Vec<String>>>;
+type 原始词语读音频率 = Vec<词语带频读音>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct 词语带频读音 {
+    词语: String,
+    拼音: Vec<String>,
+    频率: u64,
+}
 
 #[derive(Deserialize)]
 struct 带频读音 {
@@ -160,6 +168,7 @@ struct 带频读音 {
 struct 拆分输入 {
     固定拆分: 原始固定拆分,
     动态拆分: 原始动态拆分,
+    词语读音频率: 原始词语读音频率,
 }
 
 pub type 块 = usize;
@@ -168,8 +177,9 @@ pub type 动态拆分项 = Vec<[元素; 4]>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct 固定拆分项 {
     pub 词: String,
+    pub 词长: usize,
     pub 频率: u64,
-    pub 拼音首末: (usize, usize),
+    pub 拼音: (usize, usize),
     pub 字块: [块; 4],
 }
 
@@ -293,14 +303,14 @@ impl 字源上下文 {
         })
     }
 
-    fn 对齐(列表: Vec<元素>) -> [元素; 4] {
+    fn 对齐(列表: Vec<元素>, 默认值: 元素) -> [元素; 4] {
         [0, 1, 2, 3].map(|i| {
             if i == 3 && 列表.len() > 3 {
                 列表[列表.len() - 1]
             } else if i < 列表.len() {
                 列表[i]
             } else {
-                0
+                默认值
             }
         })
     }
@@ -316,7 +326,7 @@ impl 字源上下文 {
     ) {
         let 拆分输入: 拆分输入 =
             from_str(&read_to_string("dynamic_analysis.yaml").unwrap()).unwrap();
-        let mut 动态拆分 = vec![vec![]];
+        let mut 动态拆分 = vec![];
         let mut 块转数字 = FxHashMap::default();
         let mut 数字转块 = FxHashMap::default();
         for (块, 原始拆分方式列表) in 拆分输入.动态拆分 {
@@ -326,14 +336,18 @@ impl 字源上下文 {
             let mut 拆分方式列表 = vec![];
             for 原始拆分方式 in &原始拆分方式列表 {
                 for 拆分方式 in 原始拆分方式 {
-                    assert!(棱镜.元素转数字.contains_key(拆分方式), 
-                        "元素 {} 不在棱镜中", 拆分方式);
+                    assert!(
+                        棱镜.元素转数字.contains_key(拆分方式),
+                        "元素 {} 不在棱镜中",
+                        拆分方式
+                    );
                 }
                 let 拆分方式 = Self::对齐(
                     原始拆分方式
                         .iter()
                         .map(|字根| 棱镜.元素转数字[字根])
                         .collect(),
+                    0_usize,
                 );
                 拆分方式列表.push(拆分方式);
             }
@@ -348,15 +362,11 @@ impl 字源上下文 {
             动态拆分.push(拆分方式列表);
         }
         let mut 固定拆分 = vec![];
+        let mut 所有合法汉字 = FxHashMap::default();
         for 词 in &拆分输入.固定拆分 {
-            let 字块 = Self::对齐(词.拆分.iter().map(|块| 块转数字[块]).collect());
+            let 字块 = Self::对齐(词.拆分.iter().map(|块| 块转数字[块]).collect(), usize::MAX);
             let 频率 = 词.读音.iter().map(|x| x.频率).sum();
-            let 最高频读音 = &词
-                .读音
-                .iter()
-                .max_by_key(|&x| x.频率)
-                .unwrap()
-                .拼音;
+            let 最高频读音 = &词.读音.iter().max_by_key(|&x| x.频率).unwrap().拼音;
             let 拼音首 = 最高频读音.chars().next().unwrap();
             let 拼音末 = 最高频读音
                 .chars()
@@ -364,14 +374,44 @@ impl 字源上下文 {
                 .unwrap();
             let 拼音首 = 棱镜.键转数字[&拼音首];
             let 拼音末 = 棱镜.键转数字[&拼音末];
+            所有合法汉字.insert(词.汉字.chars().next().unwrap(), 0);
             固定拆分.push(固定拆分项 {
                 词: 词.汉字.clone(),
+                词长: 1,
                 频率,
-                拼音首末: (拼音首 as usize, 拼音末 as usize),
+                拼音: (拼音首 as usize, 拼音末 as usize),
                 字块,
             });
         }
+        for 词 in &拆分输入.词语读音频率 {
+            if !词.词语.chars().all(|c| 所有合法汉字.contains_key(&c)) {
+                println!("词语 {} 中包含不合法的汉字", 词.词语);
+                continue;
+            }
+            let 词长 = 词.词语.chars().count();
+            let 拼音一 = 棱镜.键转数字[&词.拼音[词长 - 2].chars().next().unwrap()];
+            let 拼音二 = 棱镜.键转数字[&词.拼音[词长 - 1].chars().next().unwrap()];
+            固定拆分.push(固定拆分项 {
+                词: 词.词语.clone(),
+                词长,
+                频率: 词.频率,
+                拼音: (拼音一 as usize, 拼音二 as usize),
+                字块: [0, 0, 0, 0],
+            });
+        }
         固定拆分.sort_by_key(|x| Reverse(x.频率));
+        // 刷新汉字的索引
+        for (索引, 拆分项) in 固定拆分.iter().enumerate() {
+            if 拆分项.词长 == 1 {
+                所有合法汉字.insert(拆分项.词.chars().next().unwrap(), 索引);
+            }
+        }
+        for 拆分项 in 固定拆分.iter_mut() {
+            if 拆分项.词长 > 1 {
+                let 所有索引: Vec<_> = 拆分项.词.chars().map(|c| 所有合法汉字[&c]).collect();
+                拆分项.字块 = Self::对齐(所有索引, usize::MAX);
+            }
+        }
         (固定拆分, 动态拆分, 块转数字, 数字转块)
     }
 

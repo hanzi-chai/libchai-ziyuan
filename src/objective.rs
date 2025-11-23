@@ -1,10 +1,9 @@
 use crate::context::{
-    字根安排, 字源上下文, 字源决策, 字源决策变化, 最大码长, 进制
+    字源上下文, 字源元素安排, 字源决策, 字源决策变化, 最大码长, 进制
 };
 use crate::encoder::字源编码器;
-use chai::{
-    objectives::目标函数, 元素, 棱镜, 编码信息, 部分编码信息, 键位分布信息
-};
+use chai::encoders::编码器;
+use chai::{objectives::目标函数, 棱镜, 键位分布信息};
 use rustc_hash::FxHashMap;
 use serde::Serialize;
 use std::{fmt::Display, iter::zip};
@@ -72,10 +71,6 @@ impl Display for 字源指标 {
 
 pub struct 字源目标函数 {
     pub 编码器: 字源编码器,
-    pub 编码结果: Vec<编码信息>,
-    pub 编码结果缓冲: Vec<编码信息>,
-    pub 拆分序列: Vec<[元素; 4]>,
-    pub 拆分序列缓冲: Vec<[元素; 4]>,
     pub 当量信息: Vec<f64>,
     pub 键位分布信息: 键位分布信息,
     pub 棱镜: 棱镜,
@@ -87,25 +82,8 @@ impl 字源目标函数 {
             .棱镜
             .预处理当量信息(&上下文.原始当量信息, 进制.pow(最大码长 as u32) as usize);
         let 键位分布信息 = 上下文.棱镜.预处理键位分布信息(&上下文.原始键位分布信息);
-        let 拆分序列 = vec![<[元素; 4]>::default(); 上下文.固定拆分.len()];
-        let 拆分序列缓冲 = 拆分序列.clone();
-        let 编码结果: Vec<_> = 上下文
-            .固定拆分
-            .iter()
-            .map(|x| 编码信息 {
-                词长: x.词.chars().count(),
-                频率: x.频率,
-                全码: 部分编码信息::default(),
-                简码: 部分编码信息::default(),
-            })
-            .collect();
-        let 编码结果缓冲 = 编码结果.clone();
         Self {
             编码器,
-            编码结果,
-            编码结果缓冲,
-            拆分序列,
-            拆分序列缓冲,
             当量信息,
             键位分布信息,
             棱镜: 上下文.棱镜.clone(),
@@ -121,17 +99,7 @@ impl 目标函数 for 字源目标函数 {
     fn 计算(
         &mut self, 解: &字源决策, 变化: &Option<字源决策变化>
     ) -> (字源指标, f64) {
-        self.编码结果缓冲.clone_from(&self.编码结果);
-        self.拆分序列缓冲.clone_from(&self.拆分序列);
-        if let Some(变化) = 变化 {
-            if 变化.拆分改变 {
-                self.编码器.构建元素序列(解, &mut self.拆分序列缓冲);
-            }
-        } else {
-            self.编码器.构建元素序列(解, &mut self.拆分序列缓冲);
-        }
-        self.编码器
-            .动态编码(解, &self.拆分序列缓冲, &mut self.编码结果缓冲);
+        self.编码器.编码(解, 变化, &mut vec![]);
         let 长度分界点 = [0, 1, 2, 3, 4].map(|x| 进制.pow(x));
         let mut 一字总频率 = 0;
         let mut 多字总频率 = 0;
@@ -144,7 +112,7 @@ impl 目标函数 for 字源目标函数 {
         let mut 总组合当量 = 0.0;
         let mut 按键数向量 = vec![0; 进制 as usize];
         let mut 总键数 = 0;
-        for (_序号, 编码信息) in self.编码结果缓冲.iter_mut().enumerate() {
+        for 编码信息 in self.编码器.编码结果.iter() {
             let 预测实际打法 = if 编码信息.词长 == 1 {
                 编码信息.简码.原始编码
             } else {
@@ -178,9 +146,9 @@ impl 目标函数 for 字源目标函数 {
         }
 
         let 字根数 = 解
-            .字根
+            .元素
             .iter()
-            .filter(|&(_, x)| x != &字根安排::未选取)
+            .filter(|&x| x != &字源元素安排::未选取)
             .count();
         let 分布: Vec<_> = 按键数向量
             .iter()
@@ -217,21 +185,11 @@ impl 目标函数 for 字源目标函数 {
             按键分布偏差,
         };
         let 目标函数值 = 一字选重率
-            + 多字选重率
             + 组合当量 * 0.1
             + 按键分布偏差 * 0.01
             + 一字简码码长 * 0.03
             + 字根数 as f64 * 0.0001;
 
-        if 变化.is_none() {
-            self.编码结果.clone_from(&self.编码结果缓冲);
-            self.拆分序列.clone_from(&self.拆分序列缓冲);
-        }
         (指标, 目标函数值)
-    }
-
-    fn 接受新解(&mut self) {
-        self.编码结果.clone_from(&self.编码结果缓冲);
-        self.拆分序列.clone_from(&self.拆分序列缓冲);
     }
 }

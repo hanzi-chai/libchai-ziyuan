@@ -13,7 +13,6 @@ use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use serde_yaml::{from_str, to_string};
 use std::{
-    cmp::Reverse,
     fs::{File, read_to_string},
     io::Write,
     path::PathBuf,
@@ -28,6 +27,8 @@ pub const 字母表: [char; 27] = [
     'b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h', 'j', 'q', 'x', 'z', 'c', 's', 'r', 'w',
     'y', 'v', 'a', 'e', 'i', 'o', 'u', '_',
 ];
+pub const 特简码: [char; 5] = ['a', 'e', 'i', 'o', 'u'];
+pub const 特简字: [char; 5] = ['了', '的', '是', '我', '不'];
 pub const 最大码长: u64 = 4;
 pub const 进制: u64 = 28;
 pub const 空格: u64 = 27;
@@ -80,6 +81,7 @@ pub struct 字源上下文 {
     pub 块转数字: FxHashMap<String, usize>,
     pub 数字转块: FxHashMap<usize, String>,
     pub 字根首笔: Vec<元素>,
+    pub 字根笔画: Vec<(元素, 元素, 元素)>,
     pub 下游字根: FxHashMap<元素, Vec<元素>>,
 }
 
@@ -229,6 +231,8 @@ struct 原始固定拆分项 {
     汉字: char,
     频率: u64,
     拆分: Vec<String>,
+    gb2312: bool,
+    通规: u8,
 }
 
 type 原始固定拆分 = Vec<原始固定拆分项>;
@@ -369,7 +373,7 @@ impl 字源上下文 {
             决策空间.元素[序号] = 安排列表;
         }
 
-        let (固定拆分, 动态拆分, 块转数字, 数字转块, 字根首笔) =
+        let (固定拆分, 动态拆分, 块转数字, 数字转块, 字根首笔, 字根笔画) =
             Self::解析动态拆分(&棱镜, &决策空间);
 
         Ok(Self {
@@ -384,6 +388,7 @@ impl 字源上下文 {
             块转数字,
             数字转块,
             字根首笔,
+            字根笔画,
             下游字根,
         })
     }
@@ -409,6 +414,7 @@ impl 字源上下文 {
         FxHashMap<String, usize>,
         FxHashMap<usize, String>,
         Vec<元素>,
+        Vec<(元素, 元素, 元素)>,
     ) {
         let 拆分输入: 拆分输入 =
             from_str(&read_to_string("data/dynamic_analysis.yaml").unwrap()).unwrap();
@@ -416,11 +422,24 @@ impl 字源上下文 {
         let mut 块转数字 = FxHashMap::default();
         let mut 数字转块 = FxHashMap::default();
         let mut 字根首笔 = vec![0; 决策空间.元素.len()];
+        let mut 字根笔画 = vec![(0, 0, 0); 决策空间.元素.len()];
         for (字根, 笔画列表) in &拆分输入.字根笔画 {
-            let 笔画 = format!("补码-{}", 笔画列表[0].min(5));
-            let 笔画序号 = 棱镜.元素转数字[&笔画];
+            let 小集合笔画 = format!("补码-{}", 笔画列表[0].min(5));
+            let 笔画序号 = 棱镜.元素转数字[&小集合笔画];
             let 字根序号 = 棱镜.元素转数字[字根];
             字根首笔[字根序号] = 笔画序号;
+            let 第一笔 = 棱镜.元素转数字[&笔画列表[0].to_string()];
+            let 第二笔 = if 笔画列表.len() > 1 {
+                棱镜.元素转数字[&笔画列表[1].to_string()]
+            } else {
+                0
+            };
+            let 末笔 = if 笔画列表.len() > 2 {
+                棱镜.元素转数字[&笔画列表[笔画列表.len() - 1].to_string()]
+            } else {
+                0
+            };
+            字根笔画[字根序号] = (第一笔, 第二笔, 末笔);
         }
         for (块, 原始拆分方式列表) in 拆分输入.动态拆分 {
             let 块序号 = 动态拆分.len();
@@ -457,6 +476,9 @@ impl 字源上下文 {
         }
         let mut 固定拆分 = vec![];
         for 词 in &拆分输入.固定拆分 {
+            if !(词.gb2312 && 词.通规 > 0) {
+                continue;
+            }
             let 字块 = Self::对齐(词.拆分.iter().map(|块| 块转数字[块]).collect(), usize::MAX);
             固定拆分.push(固定拆分项 {
                 词: 词.汉字,
@@ -465,7 +487,7 @@ impl 字源上下文 {
             });
         }
         固定拆分.sort_by(|a, b| b.频率.partial_cmp(&a.频率).unwrap());
-        (固定拆分, 动态拆分, 块转数字, 数字转块, 字根首笔)
+        (固定拆分, 动态拆分, 块转数字, 数字转块, 字根首笔, 字根笔画)
     }
 
     pub fn 生成码表(&self, 编码结果: &[编码信息]) -> Vec<码表项> {
@@ -485,36 +507,52 @@ impl 字源上下文 {
     }
 
     // 分析前 3000 字中全码重码和简码差指法的情况
-    pub fn 分析码表(&self, 码表: &[码表项], 路径: &PathBuf) {
+    pub fn 分析码表(
+        &self,
+        编码结果: &[编码信息],
+        码表: &[码表项],
+        路径: &PathBuf,
+    ) -> Result<(), 错误> {
         let 指法标记 = 指法标记::new();
         let mut 文件 = File::create(路径).unwrap();
         let mut 翻转码表 = FxHashMap::default();
+        let mut 差指法 = vec![];
         for (序号, 码表项) in 码表[..3000].iter().enumerate() {
-            let 记录 = 翻转码表
-                .entry(码表项.full.clone())
-                .or_insert_with(|| (vec![], 0));
-            记录.0.push(码表项.name.clone());
-            if 记录.0.len() == 2 {
-                记录.1 = self.固定拆分[序号].频率;
-            }
-            for 键索引 in 0..(码表项.short.len() - 1) {
-                let 组合 = (
-                    码表项.short.chars().nth(键索引).unwrap(),
-                    码表项.short.chars().nth(键索引 + 1).unwrap(),
-                );
-                if 指法标记.同指大跨排.contains(&组合) || 指法标记.错手.contains(&组合)
-                {
-                    writeln!(文件, "{} {}", 码表项.name, 码表项.short).unwrap();
+            翻转码表
+                .entry(码表项.short.clone())
+                .or_insert_with(|| vec![])
+                .push((码表项.name.clone(), 编码结果[序号].频率));
+            if 序号 <= 1500 {
+                for 键索引 in 0..(码表项.short.len() - 1) {
+                    let 组合 = (
+                        码表项.short.chars().nth(键索引).unwrap(),
+                        码表项.short.chars().nth(键索引 + 1).unwrap(),
+                    );
+                    if 指法标记.同指大跨排.contains(&组合) || 指法标记.错手.contains(&组合)
+                    {
+                        差指法.push((码表项.name.clone(), 码表项.short.clone()));
+                    }
                 }
             }
         }
-        let mut 重码项: Vec<_> = 翻转码表
-            .into_iter()
-            .filter(|(_, (names, _))| names.len() > 1)
-            .collect();
-        重码项.sort_by_key(|(_, (_, frequency))| Reverse(*frequency));
-        for (full, (names, frequency)) in 重码项 {
-            writeln!(文件, "{full} {names:?} ({frequency})").unwrap();
+        let mut 重码组列表 = vec![];
+        for (全码, 重码组) in 翻转码表 {
+            if 重码组.len() > 1 {
+                let 总频率: 频率 = 重码组[1..].iter().map(|x| x.1).sum();
+                let 词列表: Vec<_> = 重码组.iter().map(|x| x.0.clone()).collect();
+                重码组列表.push((全码, 词列表, 总频率));
+            }
         }
+        重码组列表.sort_by_key(|(_, _, 频率)| std::cmp::Reverse(*频率));
+        writeln!(文件, "# 前 3000 中简码重码\n")?;
+        for (full, names, frequency) in 重码组列表 {
+            writeln!(文件, "{full} {names:?} ({frequency})")?;
+        }
+
+        writeln!(文件, "\n# 前 1500 中简码差指法项\n")?;
+        for (name, short) in 差指法 {
+            writeln!(文件, "{name} {short}")?;
+        }
+        Ok(())
     }
 }

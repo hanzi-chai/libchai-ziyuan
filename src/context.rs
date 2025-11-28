@@ -272,7 +272,7 @@ impl 字源上下文 {
             键转数字.insert(c, 序号 as u64);
             数字转键.insert(序号 as u64, c);
         }
-        let 所有元素: Vec<String> = from_str(&read_to_string("data/rules.yaml").unwrap()).unwrap();
+        let 所有元素: Vec<String> = from_str(&read_to_string("rules.yaml").unwrap()).unwrap();
         for 元素 in &所有元素 {
             if 元素.starts_with("首字母-") {
                 continue;
@@ -417,7 +417,7 @@ impl 字源上下文 {
         Vec<(元素, 元素, 元素)>,
     ) {
         let 拆分输入: 拆分输入 =
-            from_str(&read_to_string("data/dynamic_analysis.yaml").unwrap()).unwrap();
+            from_str(&read_to_string("dynamic_analysis.yaml").unwrap()).unwrap();
         let mut 动态拆分 = vec![];
         let mut 块转数字 = FxHashMap::default();
         let mut 数字转块 = FxHashMap::default();

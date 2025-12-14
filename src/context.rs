@@ -18,6 +18,12 @@ use std::{
     path::PathBuf,
 };
 
+#[derive(PartialEq, Eq)]
+pub enum 字源方案 {
+    四码定长,
+    前缀,
+}
+pub const 方案: 字源方案 = 字源方案::四码定长;
 pub const 大集合: [char; 21] = [
     'b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h', 'j', 'q', 'x', 'z', 'c', 's', 'r', 'w',
     'y', 'v',
@@ -107,6 +113,9 @@ pub struct 条件 {
 impl 字源决策 {
     pub fn 线性化(&self, 棱镜: &棱镜) -> 元素映射 {
         let mut 映射 = vec![0; self.元素.len()];
+        for k in 0..进制 as usize {
+            映射[k] = k as u64;
+        }
         for (元素, 安排) in self.元素.iter().enumerate() {
             match 安排 {
                 字源元素安排::未选取 => {}
@@ -226,11 +235,18 @@ impl 上下文 for 字源上下文 {
     }
 }
 
+#[derive(Deserialize, Clone)]
+struct 原始读音 {
+    拼音: String,
+    频率: u64,
+}
+
 #[derive(Deserialize)]
 struct 原始固定拆分项 {
     汉字: char,
-    频率: u64,
+    频率: u64, // 已移至读音
     拆分: Vec<String>,
+    读音: Vec<原始读音>,
     gb2312: bool,
     通规: u8,
 }
@@ -253,6 +269,7 @@ pub struct 固定拆分项 {
     pub 词: char,
     pub 频率: 频率,
     pub 字块: [块; 4],
+    pub 全拼顺取: [usize; 3],
 }
 
 impl 字源上下文 {
@@ -273,8 +290,11 @@ impl 字源上下文 {
             数字转键.insert(序号 as u64, c);
         }
         let 所有元素: Vec<String> = from_str(&read_to_string("rules.yaml").unwrap()).unwrap();
+        let 忽略元素 = |x: &String| {
+            x.starts_with("首字母-") || x.starts_with("二字母-") || x.starts_with("三字母-")
+        };
         for 元素 in &所有元素 {
-            if 元素.starts_with("首字母-") {
+            if 忽略元素(元素) {
                 continue;
             }
             序号 += 1;
@@ -299,7 +319,7 @@ impl 字源上下文 {
             元素: vec![字源元素安排::未选取; 最大数量],
         };
         for 元素 in &所有元素 {
-            if 元素.starts_with("首字母-") {
+            if 忽略元素(元素) {
                 continue;
             }
             let 序号 = 棱镜.元素转数字[元素];
@@ -317,13 +337,26 @@ impl 字源上下文 {
                 );
             }
             if ["1", "2", "3", "4", "5", "6", "7"].contains(&元素.as_str()) {
-                for k in 大集合 {
-                    原始安排列表.push(ValueDescription {
-                        value: Mapped::Basic(k.to_string()),
-                        score: 0.0,
-                        condition: None,
-                    });
-                }
+                if 方案 == 字源方案::前缀 {
+                    for k in 大集合 {
+                        原始安排列表.push(ValueDescription {
+                            value: Mapped::Basic(k.to_string()),
+                            score: 0.0,
+                            condition: None,
+                        });
+                    }
+                } else {
+                    for k in 字母表 {
+                        if k == '_' {
+                            continue;
+                        }
+                        原始安排列表.push(ValueDescription {
+                            value: Mapped::Basic(k.to_string()),
+                            score: 0.0,
+                            condition: None,
+                        });
+                    }
+                };
             }
             let mut 安排列表 = vec![];
             for 原始安排 in &原始安排列表 {
@@ -423,23 +456,25 @@ impl 字源上下文 {
         let mut 数字转块 = FxHashMap::default();
         let mut 字根首笔 = vec![0; 决策空间.元素.len()];
         let mut 字根笔画 = vec![(0, 0, 0); 决策空间.元素.len()];
-        for (字根, 笔画列表) in &拆分输入.字根笔画 {
-            let 小集合笔画 = format!("补码-{}", 笔画列表[0].min(5));
-            let 笔画序号 = 棱镜.元素转数字[&小集合笔画];
-            let 字根序号 = 棱镜.元素转数字[字根];
-            字根首笔[字根序号] = 笔画序号;
-            let 第一笔 = 棱镜.元素转数字[&笔画列表[0].to_string()];
-            let 第二笔 = if 笔画列表.len() > 1 {
-                棱镜.元素转数字[&笔画列表[1].to_string()]
-            } else {
-                0
-            };
-            let 末笔 = if 笔画列表.len() > 2 {
-                棱镜.元素转数字[&笔画列表[笔画列表.len() - 1].to_string()]
-            } else {
-                0
-            };
-            字根笔画[字根序号] = (第一笔, 第二笔, 末笔);
+        if 方案 == 字源方案::前缀 {
+            for (字根, 笔画列表) in &拆分输入.字根笔画 {
+                let 小集合笔画 = format!("补码-{}", 笔画列表[0].min(5));
+                let 笔画序号 = 棱镜.元素转数字[&小集合笔画];
+                let 字根序号 = 棱镜.元素转数字[字根];
+                字根首笔[字根序号] = 笔画序号;
+                let 第一笔 = 棱镜.元素转数字[&笔画列表[0].to_string()];
+                let 第二笔 = if 笔画列表.len() > 1 {
+                    棱镜.元素转数字[&笔画列表[1].to_string()]
+                } else {
+                    0
+                };
+                let 末笔 = if 笔画列表.len() > 2 {
+                    棱镜.元素转数字[&笔画列表[笔画列表.len() - 1].to_string()]
+                } else {
+                    0
+                };
+                字根笔画[字根序号] = (第一笔, 第二笔, 末笔);
+            }
         }
         for (块, 原始拆分方式列表) in 拆分输入.动态拆分 {
             let 块序号 = 动态拆分.len();
@@ -480,10 +515,21 @@ impl 字源上下文 {
                 continue;
             }
             let 字块 = Self::对齐(词.拆分.iter().map(|块| 块转数字[块]).collect(), usize::MAX);
+            let 拼音 = 词.读音.iter().max_by_key(|x| x.频率).cloned().unwrap().拼音;
+            let mut 拼音字符: Vec<char> = 拼音.chars().collect();
+            拼音字符.pop(); // 去掉声调
+            let mut 全拼顺取 = [0; 3];
+            for i in 0..3 {
+                if i < 拼音字符.len() {
+                    let c = 拼音字符[i];
+                    全拼顺取[i] = 棱镜.键转数字[&c] as 元素;
+                }
+            }
             固定拆分.push(固定拆分项 {
                 词: 词.汉字,
                 频率: 词.频率 as 频率,
                 字块,
+                全拼顺取,
             });
         }
         固定拆分.sort_by(|a, b| b.频率.partial_cmp(&a.频率).unwrap());
@@ -496,9 +542,9 @@ impl 字源上下文 {
         for (序号, 可编码对象) in self.固定拆分.iter().enumerate() {
             let 码表项 = 码表项 {
                 name: 可编码对象.词.to_string(),
-                full: 转编码(编码结果[序号].全码.原始编码),
+                full: 转编码(编码结果[序号].全码.实际编码),
                 full_rank: 编码结果[序号].全码.原始编码候选位置,
-                short: 转编码(编码结果[序号].简码.原始编码),
+                short: 转编码(编码结果[序号].简码.实际编码),
                 short_rank: 编码结果[序号].简码.原始编码候选位置,
             };
             码表.push(码表项);

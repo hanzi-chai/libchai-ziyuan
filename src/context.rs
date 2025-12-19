@@ -1,5 +1,5 @@
 use chai::{
-    config::{Condition, Mapped, ValueDescription, 配置},
+    config::{Condition, Mapped, MappedKey, ValueDescription, 配置},
     contexts::上下文,
     interfaces::默认输入,
     objectives::metric::指法标记,
@@ -24,10 +24,10 @@ pub enum 字源方案 {
     前缀,
 }
 pub const 方案: 字源方案 = 字源方案::四码定长;
-pub const 大集合: [char; 21] = [
-    'b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h', 'j', 'q', 'x', 'z', 'c', 's', 'r', 'w',
-    'y', 'v',
-];
+// pub const 大集合: [char; 21] = [
+//     'b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h', 'j', 'q', 'x', 'z', 'c', 's', 'r', 'w',
+//     'y', 'v',
+// ];
 // pub const 小集合: [char; 5] = ['a', 'e', 'i', 'o', 'u'];
 pub const 字母表: [char; 27] = [
     'b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h', 'j', 'q', 'x', 'z', 'c', 's', 'r', 'w',
@@ -277,6 +277,7 @@ impl 字源上下文 {
         let 布局 = 输入.配置.form.clone();
         let 原始决策 = 布局.mapping;
         let 原始决策空间 = 布局.mapping_space.unwrap();
+        let 原始生成器 = 布局.mapping_generator.unwrap();
         let mut 元素转数字 = FxHashMap::default();
         let mut 数字转元素 = FxHashMap::default();
         let mut 键转数字 = FxHashMap::default();
@@ -336,70 +337,73 @@ impl 字源上下文 {
                     },
                 );
             }
-            if ["1", "2", "3", "4", "5", "6", "7"].contains(&元素.as_str()) {
-                if 方案 == 字源方案::前缀 {
-                    for k in 大集合 {
-                        原始安排列表.push(ValueDescription {
-                            value: Mapped::Basic(k.to_string()),
-                            score: 0.0,
-                            condition: None,
-                        });
-                    }
-                } else {
-                    for k in 字母表 {
-                        if k == '_' {
-                            continue;
-                        }
-                        原始安排列表.push(ValueDescription {
-                            value: Mapped::Basic(k.to_string()),
-                            score: 0.0,
-                            condition: None,
-                        });
-                    }
-                };
-            }
             let mut 安排列表 = vec![];
             for 原始安排 in &原始安排列表 {
-                let 字根安排 = 字源元素安排::from(&原始安排.value, &棱镜);
-                let mut 原始条件 = 原始安排.condition.clone().unwrap_or_default();
-                let 归并字根 = if let 字源元素安排::归并(字根) = &字根安排 {
-                    Some(字根.clone())
-                } else {
-                    None
-                };
-                if let Some(归并字根) = 归并字根 {
-                    let 默认条件 = Condition {
-                        element: 棱镜.数字转元素[&归并字根].clone(),
-                        op: "不是".to_string(),
-                        value: Mapped::Unused(()),
+                let mut 展开结果 = vec![];
+                if let Mapped::Advanced(keys) = &原始安排.value {
+                    let MappedKey::Generator { generator } = &keys[0] else {
+                        panic!("无法展开生成器映射: {:?}", 原始安排.value);
                     };
-                    if !原始条件.iter().any(|x| x == &默认条件) {
-                        原始条件.push(默认条件);
+                    let 键位 = 原始生成器
+                        .iter()
+                        .find(|&x| &x.name == generator)
+                        .cloned()
+                        .unwrap()
+                        .keys;
+                    // 展开所有可能的键位
+                    for 键 in 键位 {
+                        let 替换后的映射 = Mapped::Basic(键.to_string());
+                        展开结果.push(ValueDescription {
+                            value: 替换后的映射,
+                            score: 原始安排.score,
+                            condition: 原始安排.condition.clone(),
+                        });
                     }
+                } else {
+                    展开结果.push(原始安排.clone());
                 }
-                let 条件列表: Vec<条件> = 原始条件
-                    .into_iter()
-                    .map(|c| 条件 {
-                        元素: 棱镜.元素转数字[&c.element],
-                        谓词: c.op == "是",
-                        值: 字源元素安排::from(&c.value, &棱镜),
-                    })
-                    .collect();
-                for 条件 in &条件列表 {
-                    if 下游字根.contains_key(&条件.元素) {
-                        if !下游字根[&条件.元素].contains(&序号) {
-                            下游字根.get_mut(&条件.元素).unwrap().push(序号);
-                        }
+                for 原始安排 in 展开结果 {
+                    let 字根安排 = 字源元素安排::from(&原始安排.value, &棱镜);
+                    let mut 原始条件 = 原始安排.condition.clone().unwrap_or_default();
+                    let 归并字根 = if let 字源元素安排::归并(字根) = &字根安排 {
+                        Some(字根.clone())
                     } else {
-                        下游字根.insert(条件.元素.clone(), vec![序号]);
+                        None
+                    };
+                    if let Some(归并字根) = 归并字根 {
+                        let 默认条件 = Condition {
+                            element: 棱镜.数字转元素[&归并字根].clone(),
+                            op: "不是".to_string(),
+                            value: Mapped::Unused(()),
+                        };
+                        if !原始条件.iter().any(|x| x == &默认条件) {
+                            原始条件.push(默认条件);
+                        }
                     }
+                    let 条件列表: Vec<条件> = 原始条件
+                        .into_iter()
+                        .map(|c| 条件 {
+                            元素: 棱镜.元素转数字[&c.element],
+                            谓词: c.op == "是",
+                            值: 字源元素安排::from(&c.value, &棱镜),
+                        })
+                        .collect();
+                    for 条件 in &条件列表 {
+                        if 下游字根.contains_key(&条件.元素) {
+                            if !下游字根[&条件.元素].contains(&序号) {
+                                下游字根.get_mut(&条件.元素).unwrap().push(序号);
+                            }
+                        } else {
+                            下游字根.insert(条件.元素.clone(), vec![序号]);
+                        }
+                    }
+                    let 条件字根安排 = 字源条件元素安排 {
+                        安排: 字根安排,
+                        条件列表,
+                        打分: 原始安排.score,
+                    };
+                    安排列表.push(条件字根安排);
                 }
-                let 条件字根安排 = 字源条件元素安排 {
-                    安排: 字根安排,
-                    条件列表,
-                    打分: 原始安排.score,
-                };
-                安排列表.push(条件字根安排);
             }
             let 安排列表: Vec<_> = 安排列表.into_iter().collect();
             初始决策.元素[序号] = 字源元素安排::from(当前决策, &棱镜);

@@ -1,15 +1,15 @@
 use chai::{
-    config::{Condition, Mapped, MappedKey, ValueDescription, 配置},
-    contexts::上下文,
+    config::{Condition, Mapped, MappedKey, 配置},
+    contexts::{上下文, 合并初始决策, 展开变量, 拓扑排序},
     interfaces::默认输入,
     objectives::metric::指法标记,
-    optimizers::解特征,
-    元素, 元素映射, 原始当量信息, 原始键位分布信息, 棱镜, 码表项, 编码, 编码信息, 错误,
+    optimizers::决策,
+    元素, 原始当量信息, 原始键位分布信息, 棱镜, 码表项, 编码信息, 错误,
 };
 use chrono::Local;
 use core::panic;
 use indexmap::IndexMap;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use serde_yaml::{from_str, to_string};
 use std::{
@@ -56,9 +56,11 @@ impl 字源元素安排 {
             Mapped::Basic(keys) => 字源元素安排::键位(
                 keys.chars().next().expect("Basic 映射应至少包含一个字符"),
             ),
-            _ => {
-                println!("无法从映射中恢复元素安排: {:?}", mapped);
-                unreachable!()
+            Mapped::Advanced(keys) => {
+                let MappedKey::Ascii(k) = &keys[0] else {
+                    panic!("无法从高级映射中恢复元素安排: {:?}", mapped);
+                };
+                字源元素安排::键位(*k)
             }
         }
     }
@@ -82,13 +84,14 @@ pub struct 字源上下文 {
     pub 决策空间: 字源决策空间,
     pub 原始键位分布信息: 原始键位分布信息,
     pub 原始当量信息: 原始当量信息,
-    pub 固定拆分: Vec<固定拆分项>,
+    pub 一字信息: Vec<一字信息项>,
+    pub 多字信息: Vec<多字信息项>,
     pub 动态拆分: Vec<动态拆分项>,
     pub 块转数字: FxHashMap<String, usize>,
     pub 数字转块: FxHashMap<usize, String>,
     pub 字根首笔: Vec<元素>,
     pub 字根笔画: Vec<(元素, 元素, 元素)>,
-    pub 下游字根: FxHashMap<元素, Vec<元素>>,
+    pub 元素图: FxHashMap<元素, Vec<元素>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,8 +113,10 @@ pub struct 条件 {
     pub 值: 字源元素安排,
 }
 
+pub type 线性化决策 = Vec<u64>;
+
 impl 字源决策 {
-    pub fn 线性化(&self, 棱镜: &棱镜) -> 元素映射 {
+    pub fn 线性化(&self, 棱镜: &棱镜) -> 线性化决策 {
         let mut 映射 = vec![0; self.元素.len()];
         for k in 0..进制 as usize {
             映射[k] = k as u64;
@@ -182,12 +187,8 @@ impl 字源决策变化 {
     }
 }
 
-impl 解特征 for 字源决策 {
+impl 决策 for 字源决策 {
     type 变化 = 字源决策变化;
-
-    fn 单位元() -> Self::变化 {
-        字源决策变化::无变化()
-    }
 
     fn 除法(旧变化: &Self::变化, 新变化: &Self::变化) -> Self::变化 {
         let mut 移动字根 = 旧变化.移动字根.clone();
@@ -217,7 +218,7 @@ impl 解特征 for 字源决策 {
 }
 
 impl 上下文 for 字源上下文 {
-    type 解类型 = 字源决策;
+    type 决策 = 字源决策;
 
     fn 序列化(&self, 解: &字源决策) -> String {
         let mut 新配置 = self.配置.clone();
@@ -242,22 +243,26 @@ struct 原始读音 {
 }
 
 #[derive(Deserialize)]
-struct 原始固定拆分项 {
+struct 原始汉字信息 {
     汉字: char,
-    频率: u64, // 已移至读音
-    拆分: Vec<String>,
-    读音: Vec<原始读音>,
-    gb2312: bool,
+    gb2312: u8,
     通规: u8,
+    频率: u64, // 已移至读音
+    读音: Vec<原始读音>,
+    字块: Vec<String>,
 }
 
-type 原始固定拆分 = Vec<原始固定拆分项>;
-type 原始动态拆分 = FxHashMap<String, Vec<Vec<String>>>;
+#[derive(Deserialize)]
+struct 原始多字词信息 {
+    词: String,
+    频率: u64,
+}
 
 #[derive(Deserialize)]
 struct 拆分输入 {
-    固定拆分: 原始固定拆分,
-    动态拆分: 原始动态拆分,
+    汉字信息: Vec<原始汉字信息>,
+    多字词信息: Vec<原始多字词信息>,
+    动态拆分: FxHashMap<String, Vec<Vec<String>>>,
     字根笔画: FxHashMap<String, Vec<u8>>,
 }
 
@@ -265,23 +270,51 @@ pub type 块 = usize;
 pub type 动态拆分项 = Vec<[元素; 4]>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct 固定拆分项 {
+pub struct 一字信息项 {
     pub 词: char,
     pub 频率: 频率,
     pub 字块: [块; 4],
     pub 全拼顺取: [usize; 3],
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct 多字信息项 {
+    pub 词: String,
+    pub 频率: 频率,
+}
+
+pub fn 对齐(列表: Vec<元素>, 默认值: 元素) -> [元素; 4] {
+    [0, 1, 2, 3].map(|i| {
+        if i == 3 && 列表.len() > 3 {
+            列表[列表.len() - 1]
+        } else if i < 列表.len() {
+            列表[i]
+        } else {
+            默认值
+        }
+    })
+}
+
 impl 字源上下文 {
     pub fn 新建(输入: 默认输入) -> Result<Self, 错误> {
         let 布局 = 输入.配置.form.clone();
-        let 原始决策 = 布局.mapping;
-        let 原始决策空间 = 布局.mapping_space.unwrap();
-        let 原始生成器 = 布局.mapping_generator.unwrap();
+        let mut 原始决策 = 布局.mapping;
+        // 去掉只用于前端的字音元素
+        原始决策.retain(|k, _| k.chars().count() == 1);
+        let mut 原始决策空间 = 布局.mapping_space.unwrap();
+        let 原始变量映射 = 布局.mapping_variables.unwrap();
         let mut 元素转数字 = FxHashMap::default();
         let mut 数字转元素 = FxHashMap::default();
         let mut 键转数字 = FxHashMap::default();
         let mut 数字转键 = FxHashMap::default();
+        for 元素 in 原始决策空间.keys() {
+            if !原始决策.contains_key(元素) {
+                原始决策.insert(元素.clone(), Mapped::Unused(()));
+            }
+        }
+        合并初始决策(&mut 原始决策空间, &原始决策);
+        展开变量(&mut 原始决策空间, &原始变量映射);
+        let (所有元素, 原始元素图) = 拓扑排序(&原始决策空间).unwrap();
         let mut 序号 = 0;
         for c in 字母表 {
             序号 += 1;
@@ -290,14 +323,7 @@ impl 字源上下文 {
             键转数字.insert(c, 序号 as u64);
             数字转键.insert(序号 as u64, c);
         }
-        let 所有元素: Vec<String> = from_str(&read_to_string("rules.yaml").unwrap()).unwrap();
-        let 忽略元素 = |x: &String| {
-            x.starts_with("首字母-") || x.starts_with("二字母-") || x.starts_with("三字母-")
-        };
         for 元素 in &所有元素 {
-            if 忽略元素(元素) {
-                continue;
-            }
             序号 += 1;
             元素转数字.insert(元素.clone(), 序号);
             数字转元素.insert(序号, 元素.clone());
@@ -310,7 +336,6 @@ impl 字源上下文 {
             进制: 进制 as u64,
         };
 
-        let mut 下游字根: FxHashMap<元素, Vec<_>> = FxHashMap::default();
         let 最大数量 = 棱镜.数字转元素.len() + 1;
         let mut 决策空间 = 字源决策空间 {
             元素: vec![vec![]; 最大数量],
@@ -319,98 +344,54 @@ impl 字源上下文 {
         let mut 初始决策 = 字源决策 {
             元素: vec![字源元素安排::未选取; 最大数量],
         };
-        for 元素 in &所有元素 {
-            if 忽略元素(元素) {
-                continue;
-            }
-            let 序号 = 棱镜.元素转数字[元素];
+        for 元素名称 in &所有元素 {
+            let 序号 = 棱镜.元素转数字[元素名称];
             决策空间.字根.push(序号);
-            let mut 原始安排列表 = 原始决策空间.get(元素).cloned().unwrap_or(vec![]);
-            let 当前决策 = 原始决策.get(元素).unwrap_or(&Mapped::Unused(()));
-            if !原始安排列表.iter().any(|x| &x.value == 当前决策) {
-                原始安排列表.insert(
-                    0,
-                    ValueDescription {
-                        value: 当前决策.clone(),
-                        score: 0.0,
-                        condition: None,
-                    },
-                );
-            }
+            let 原始安排列表 = 原始决策空间[元素名称].clone();
+            let 原始安排 = 原始决策[元素名称].clone();
             let mut 安排列表 = vec![];
-            for 原始安排 in &原始安排列表 {
-                let mut 展开结果 = vec![];
-                if let Mapped::Advanced(keys) = &原始安排.value {
-                    let MappedKey::Generator { generator } = &keys[0] else {
-                        panic!("无法展开生成器映射: {:?}", 原始安排.value);
+            for 可行原始安排 in &原始安排列表 {
+                let 可行安排 = 字源元素安排::from(&可行原始安排.value, &棱镜);
+                let mut 原始条件 = 可行原始安排.condition.clone().unwrap_or_default();
+                if let 字源元素安排::归并(字根) = &可行安排 {
+                    let 默认条件 = Condition {
+                        element: 棱镜.数字转元素[&字根].clone(),
+                        op: "不是".to_string(),
+                        value: Mapped::Unused(()),
                     };
-                    let 键位 = 原始生成器
-                        .iter()
-                        .find(|&x| &x.name == generator)
-                        .cloned()
-                        .unwrap()
-                        .keys;
-                    // 展开所有可能的键位
-                    for 键 in 键位 {
-                        let 替换后的映射 = Mapped::Basic(键.to_string());
-                        展开结果.push(ValueDescription {
-                            value: 替换后的映射,
-                            score: 原始安排.score,
-                            condition: 原始安排.condition.clone(),
-                        });
+                    if !原始条件.iter().any(|x| x == &默认条件) {
+                        原始条件.push(默认条件);
                     }
-                } else {
-                    展开结果.push(原始安排.clone());
                 }
-                for 原始安排 in 展开结果 {
-                    let 字根安排 = 字源元素安排::from(&原始安排.value, &棱镜);
-                    let mut 原始条件 = 原始安排.condition.clone().unwrap_or_default();
-                    let 归并字根 = if let 字源元素安排::归并(字根) = &字根安排 {
-                        Some(字根.clone())
-                    } else {
-                        None
-                    };
-                    if let Some(归并字根) = 归并字根 {
-                        let 默认条件 = Condition {
-                            element: 棱镜.数字转元素[&归并字根].clone(),
-                            op: "不是".to_string(),
-                            value: Mapped::Unused(()),
-                        };
-                        if !原始条件.iter().any(|x| x == &默认条件) {
-                            原始条件.push(默认条件);
-                        }
-                    }
-                    let 条件列表: Vec<条件> = 原始条件
-                        .into_iter()
-                        .map(|c| 条件 {
-                            元素: 棱镜.元素转数字[&c.element],
-                            谓词: c.op == "是",
-                            值: 字源元素安排::from(&c.value, &棱镜),
-                        })
-                        .collect();
-                    for 条件 in &条件列表 {
-                        if 下游字根.contains_key(&条件.元素) {
-                            if !下游字根[&条件.元素].contains(&序号) {
-                                下游字根.get_mut(&条件.元素).unwrap().push(序号);
-                            }
-                        } else {
-                            下游字根.insert(条件.元素.clone(), vec![序号]);
-                        }
-                    }
-                    let 条件字根安排 = 字源条件元素安排 {
-                        安排: 字根安排,
-                        条件列表,
-                        打分: 原始安排.score,
-                    };
-                    安排列表.push(条件字根安排);
-                }
+                let 条件列表: Vec<条件> = 原始条件
+                    .into_iter()
+                    .map(|c| 条件 {
+                        元素: 棱镜.元素转数字[&c.element],
+                        谓词: c.op == "是",
+                        值: 字源元素安排::from(&c.value, &棱镜),
+                    })
+                    .collect();
+                let 条件字根安排 = 字源条件元素安排 {
+                    安排: 可行安排,
+                    条件列表,
+                    打分: 可行原始安排.score,
+                };
+                安排列表.push(条件字根安排);
             }
-            let 安排列表: Vec<_> = 安排列表.into_iter().collect();
-            初始决策.元素[序号] = 字源元素安排::from(当前决策, &棱镜);
+            初始决策.元素[序号] = 字源元素安排::from(&原始安排, &棱镜);
             决策空间.元素[序号] = 安排列表;
         }
 
-        let (固定拆分, 动态拆分, 块转数字, 数字转块, 字根首笔, 字根笔画) =
+        let mut 元素图 = FxHashMap::default();
+        for (元素名称, 下游名称列表) in 原始元素图 {
+            let 元素 = 棱镜.元素转数字[&元素名称];
+            let 下游元素列表: Vec<_> = 下游名称列表
+                .iter()
+                .map(|name| 棱镜.元素转数字[name])
+                .collect();
+            元素图.insert(元素, 下游元素列表);
+        }
+        let (一字信息, 多字信息, 动态拆分, 块转数字, 数字转块, 字根首笔, 字根笔画) =
             Self::解析动态拆分(&棱镜, &决策空间);
 
         Ok(Self {
@@ -420,25 +401,14 @@ impl 字源上下文 {
             决策空间,
             原始键位分布信息: 输入.原始键位分布信息,
             原始当量信息: 输入.原始当量信息,
-            固定拆分,
+            一字信息,
+            多字信息,
             动态拆分,
             块转数字,
             数字转块,
             字根首笔,
             字根笔画,
-            下游字根,
-        })
-    }
-
-    fn 对齐(列表: Vec<元素>, 默认值: 元素) -> [元素; 4] {
-        [0, 1, 2, 3].map(|i| {
-            if i == 3 && 列表.len() > 3 {
-                列表[列表.len() - 1]
-            } else if i < 列表.len() {
-                列表[i]
-            } else {
-                默认值
-            }
+            元素图,
         })
     }
 
@@ -446,7 +416,8 @@ impl 字源上下文 {
         棱镜: &棱镜,
         决策空间: &字源决策空间,
     ) -> (
-        Vec<固定拆分项>,
+        Vec<一字信息项>,
+        Vec<多字信息项>,
         Vec<动态拆分项>,
         FxHashMap<String, usize>,
         FxHashMap<usize, String>,
@@ -493,7 +464,7 @@ impl 字源上下文 {
                         拆分方式
                     );
                 }
-                let 拆分方式 = Self::对齐(
+                let 拆分方式 = 对齐(
                     原始拆分方式
                         .iter()
                         .map(|字根| 棱镜.元素转数字[字根])
@@ -513,12 +484,15 @@ impl 字源上下文 {
             }
             动态拆分.push(拆分方式列表);
         }
-        let mut 固定拆分 = vec![];
-        for 词 in &拆分输入.固定拆分 {
-            if !(词.gb2312 && 词.通规 > 0) {
+        let mut 一字信息 = vec![];
+        let mut 多字信息 = vec![];
+        let mut 合法汉字 = FxHashSet::default();
+        for 词 in &拆分输入.汉字信息 {
+            if !(词.gb2312 > 0 && 词.通规 > 0) {
                 continue;
             }
-            let 字块 = Self::对齐(词.拆分.iter().map(|块| 块转数字[块]).collect(), usize::MAX);
+            合法汉字.insert(词.汉字);
+            let 字块 = 对齐(词.字块.iter().map(|块| 块转数字[块]).collect(), usize::MAX);
             let 拼音 = 词.读音.iter().max_by_key(|x| x.频率).cloned().unwrap().拼音;
             let mut 拼音字符: Vec<char> = 拼音.chars().collect();
             拼音字符.pop(); // 去掉声调
@@ -529,31 +503,34 @@ impl 字源上下文 {
                     全拼顺取[i] = 棱镜.键转数字[&c] as 元素;
                 }
             }
-            固定拆分.push(固定拆分项 {
+            一字信息.push(一字信息项 {
                 词: 词.汉字,
                 频率: 词.频率 as 频率,
                 字块,
                 全拼顺取,
             });
         }
-        固定拆分.sort_by(|a, b| b.频率.partial_cmp(&a.频率).unwrap());
-        (固定拆分, 动态拆分, 块转数字, 数字转块, 字根首笔, 字根笔画)
-    }
-
-    pub fn 生成码表(&self, 编码结果: &[编码信息]) -> Vec<码表项> {
-        let mut 码表 = Vec::new();
-        let 转编码 = |code: 编码| self.棱镜.数字转编码(code).iter().collect();
-        for (序号, 可编码对象) in self.固定拆分.iter().enumerate() {
-            let 码表项 = 码表项 {
-                name: 可编码对象.词.to_string(),
-                full: 转编码(编码结果[序号].全码.实际编码),
-                full_rank: 编码结果[序号].全码.原始编码候选位置,
-                short: 转编码(编码结果[序号].简码.实际编码),
-                short_rank: 编码结果[序号].简码.原始编码候选位置,
-            };
-            码表.push(码表项);
+        一字信息.sort_by(|a, b| b.频率.partial_cmp(&a.频率).unwrap());
+        for 词 in &拆分输入.多字词信息 {
+            if 词.词.chars().any(|c| !合法汉字.contains(&c)) {
+                println!("跳过多字词: {}", 词.词);
+                continue;
+            }
+            多字信息.push(多字信息项 {
+                词: 词.词.clone(),
+                频率: 词.频率 as 频率,
+            });
         }
-        码表
+        多字信息.sort_by(|a, b| b.频率.partial_cmp(&a.频率).unwrap());
+        (
+            一字信息,
+            多字信息,
+            动态拆分,
+            块转数字,
+            数字转块,
+            字根首笔,
+            字根笔画,
+        )
     }
 
     // 分析前 3000 字中全码重码和简码差指法的情况
@@ -565,43 +542,61 @@ impl 字源上下文 {
     ) -> Result<(), 错误> {
         let 指法标记 = 指法标记::new();
         let mut 文件 = File::create(路径).unwrap();
+        // 全码 -> 词列表的映射
         let mut 翻转码表 = FxHashMap::default();
-        let mut 差指法 = vec![];
-        for (序号, 码表项) in 码表[..3000].iter().enumerate() {
+        for (序号, 码表项) in 码表.iter().enumerate() {
             翻转码表
-                .entry(码表项.short.clone())
+                .entry(码表项.full.clone())
                 .or_insert_with(|| vec![])
                 .push((码表项.name.clone(), 编码结果[序号].频率));
-            if 序号 <= 1500 {
-                for 键索引 in 0..(码表项.short.len() - 1) {
-                    let 组合 = (
-                        码表项.short.chars().nth(键索引).unwrap(),
-                        码表项.short.chars().nth(键索引 + 1).unwrap(),
-                    );
-                    if 指法标记.同指大跨排.contains(&组合) || 指法标记.错手.contains(&组合)
-                    {
-                        差指法.push((码表项.name.clone(), 码表项.short.clone()));
-                    }
+        }
+        let mut 差指法 = vec![];
+        for 码表项 in 码表.iter().take(2000) {
+            let 词: Vec<char> = 码表项.name.chars().collect();
+            let actual = if 词.len() > 1 {
+                码表项.full.clone()
+            } else {
+                码表项.short.clone()
+            };
+            for 键索引 in 0..(actual.len() - 1) {
+                let 组合 = (
+                    actual.chars().nth(键索引).unwrap(),
+                    actual.chars().nth(键索引 + 1).unwrap(),
+                );
+                if 指法标记.同指大跨排.contains(&组合) || 指法标记.错手.contains(&组合)
+                {
+                    差指法.push((码表项.name.clone(), actual.clone()));
                 }
             }
         }
-        let mut 重码组列表 = vec![];
-        for (全码, 重码组) in 翻转码表 {
-            if 重码组.len() > 1 {
-                let 总频率: 频率 = 重码组[1..].iter().map(|x| x.1).sum();
-                let 词列表: Vec<_> = 重码组.iter().map(|x| x.0.clone()).collect();
-                重码组列表.push((全码, 词列表, 总频率));
+        let mut 重码 = vec![];
+        for 码表项 in 码表.iter().take(4000) {
+            let 是重码 = if 码表项.name.chars().count() > 1 {
+                码表项.full_rank != 0
+            } else {
+                码表项.short_rank != 0
+            };
+            if 是重码 {
+                let mut 完整重码组 = 翻转码表[&码表项.full].clone();
+                let 位置 = 完整重码组
+                    .iter()
+                    .position(|(x, _)| x == &码表项.name)
+                    .unwrap();
+                完整重码组.resize(位置, ("".to_string(), 0));
+                重码.push((
+                    码表项.name.clone(),
+                    码表项.full.clone(),
+                    完整重码组,
+                ));
             }
         }
-        重码组列表.sort_by_key(|(_, _, 频率)| std::cmp::Reverse(*频率));
-        writeln!(文件, "# 前 3000 中简码重码\n")?;
-        for (full, names, frequency) in 重码组列表 {
-            writeln!(文件, "{full} {names:?} ({frequency})")?;
+        writeln!(文件, "# 前 4000 中重码\n")?;
+        for (name, code, names) in 重码 {
+            writeln!(文件, "- {name} {code}：{names:?}")?;
         }
-
-        writeln!(文件, "\n# 前 1500 中简码差指法项\n")?;
-        for (name, short) in 差指法 {
-            writeln!(文件, "{name} {short}")?;
+        writeln!(文件, "\n# 前 2000 中差指法项\n")?;
+        for (name, code) in 差指法 {
+            writeln!(文件, "- {name} {code}")?;
         }
         Ok(())
     }

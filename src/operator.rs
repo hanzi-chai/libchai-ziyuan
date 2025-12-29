@@ -16,7 +16,7 @@ pub struct 字源操作 {
 }
 
 impl 变异 for 字源操作 {
-    type 解类型 = 字源决策;
+    type 决策 = 字源决策;
     fn 变异(&mut self, 决策: &mut 字源决策) -> 字源决策变化 {
         let 随机数: f64 = random();
         let mut 变化 = if 随机数 < 0.2 {
@@ -35,7 +35,7 @@ impl 字源操作 {
     pub fn 新建(上下文: &字源上下文) -> Self {
         let 棱镜 = 上下文.棱镜.clone();
         let 决策空间 = 上下文.决策空间.clone();
-        let 下游字根 = 上下文.下游字根.clone();
+        let 下游字根 = 上下文.元素图.clone();
         return 字源操作 {
             _棱镜: 棱镜,
             决策空间,

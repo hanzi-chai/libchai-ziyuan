@@ -5,4 +5,4 @@ o:
 	cargo run --release -- optimize
 
 p:
-	cargo run --release -- -t 10 optimize
+	cargo run --release -- optimize -t 10

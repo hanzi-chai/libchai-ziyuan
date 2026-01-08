@@ -2,12 +2,11 @@ use crate::context::{
     字源上下文, 字源元素安排, 字源决策, 字源决策变化, 字源决策空间
 };
 use chai::{operators::变异, 元素, 棱镜};
-use rand::{
-    random, rng,
-    seq::{IndexedRandom, IteratorRandom},
-};
+use rand::{random, random_range, rng, seq::IndexedRandom};
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
+
+const 最大尝试次数: usize = 100;
 
 pub struct 字源操作 {
     _棱镜: 棱镜,
@@ -44,10 +43,20 @@ impl 字源操作 {
     }
 
     fn 传播(&self, 变化: &mut 字源决策变化, 决策: &mut 字源决策) {
+        // 初始化队列
         let mut 队列 = VecDeque::new();
-        队列.append(&mut 变化.增加字根.clone().into());
-        队列.append(&mut 变化.减少字根.clone().into());
-        队列.append(&mut 变化.移动字根.clone().into());
+        for 元素 in 变化
+            .增加字根
+            .iter()
+            .chain(变化.减少字根.iter())
+            .chain(变化.移动字根.iter())
+        {
+            for 下游元素 in self.下游字根.get(元素).unwrap_or(&vec![]) {
+                if !队列.contains(下游元素) {
+                    队列.push_back(下游元素.clone());
+                }
+            }
+        }
         let mut iters = 0;
         while !队列.is_empty() {
             iters += 1;
@@ -101,80 +110,75 @@ impl 字源操作 {
 
     fn 产生字根(&self, 决策: &mut 字源决策) -> 字源决策变化 {
         let mut rng = rng();
-        let mut 备选列表 = vec![];
-        for 字根 in &self.决策空间.字根 {
-            let 安排 = 决策.元素[*字根];
-            if 安排 != 字源元素安排::未选取 {
+        for _ in 0..最大尝试次数 {
+            let 元素 = *self.决策空间.字根.choose(&mut rng).unwrap();
+            if 决策.元素[元素] != 字源元素安排::未选取 {
                 continue;
             }
-            let mut 可行安排 = vec![];
-            for 条件安排 in &self.决策空间.元素[*字根] {
-                if matches!(条件安排.安排, 字源元素安排::未选取) {
-                    continue;
-                }
-                if 决策.允许(条件安排) {
-                    可行安排.push(条件安排.安排.clone());
+            // 蓄水池抽样
+            let mut 下一个安排 = None;
+            let mut count = 0;
+            for 条件安排 in &self.决策空间.元素[元素] {
+                if 条件安排.安排 != 字源元素安排::未选取 && 决策.允许(条件安排)
+                {
+                    count += 1;
+                    if random_range(0..count) == 0 {
+                        下一个安排 = Some(条件安排.安排);
+                    }
                 }
             }
-            if !可行安排.is_empty() {
-                备选列表.push((字根.clone(), 可行安排));
+            if let Some(下一个安排) = 下一个安排 {
+                决策.元素[元素] = 下一个安排;
+                return 字源决策变化::新建(vec![元素], vec![], vec![]);
             }
         }
-        if let Some((字根, 可行位置)) = 备选列表.into_iter().choose(&mut rng) {
-            决策.元素[字根] = 可行位置.into_iter().choose(&mut rng).unwrap().clone();
-            字源决策变化::新建(vec![字根], vec![], vec![])
-        } else {
-            字源决策变化::无变化()
-        }
+        字源决策变化::无变化()
     }
 
     fn 湮灭字根(&self, 决策: &mut 字源决策) -> 字源决策变化 {
         let mut rng = rng();
-        let mut 备选列表 = vec![];
-        for 字根 in &self.决策空间.字根 {
-            let 安排 = &决策.元素[*字根];
-            if matches!(安排, 字源元素安排::未选取) {
+        for _ in 0..最大尝试次数 {
+            let 元素 = *self.决策空间.字根.choose(&mut rng).unwrap();
+            if 决策.元素[元素] == 字源元素安排::未选取 {
                 continue;
             }
-            for 条件安排 in &self.决策空间.元素[*字根] {
+            for 条件安排 in &self.决策空间.元素[元素] {
                 if 条件安排.安排 == 字源元素安排::未选取 && 决策.允许(条件安排)
                 {
-                    备选列表.push(字根.clone());
+                    决策.元素[元素] = 条件安排.安排;
+                    return 字源决策变化::新建(vec![], vec![], vec![元素]);
                 }
             }
         }
-        if 备选列表.is_empty() {
-            return 字源决策变化::无变化();
-        }
-        let 字根 = *备选列表.iter().choose(&mut rng).unwrap();
-        决策.元素[字根] = 字源元素安排::未选取;
-        字源决策变化::新建(vec![], vec![字根], vec![])
+        字源决策变化::无变化()
     }
 
     fn 移动字根(&self, 决策: &mut 字源决策) -> 字源决策变化 {
         let mut rng = rng();
-        let mut 备选列表 = vec![];
-        for 字根 in &self.决策空间.字根 {
-            let 安排 = 决策.元素[*字根];
-            if matches!(安排, 字源元素安排::未选取) {
+        for _ in 0..最大尝试次数 {
+            let 元素 = *self.决策空间.字根.choose(&mut rng).unwrap();
+            if 决策.元素[元素] == 字源元素安排::未选取 {
                 continue;
             }
-            let mut 可行安排 = vec![];
-            for 条件安排 in &self.决策空间.元素[*字根] {
-                if matches!(条件安排.安排, 字源元素安排::未选取) || 条件安排.安排 == 安排
+            // 蓄水池抽样
+            let mut 下一个安排 = None;
+            let mut count = 0;
+            for 条件安排 in &self.决策空间.元素[元素] {
+                if 条件安排.安排 != 决策.元素[元素]
+                    && 条件安排.安排 != 字源元素安排::未选取
+                    && 决策.允许(条件安排)
                 {
-                    continue;
-                }
-                if 决策.允许(条件安排) {
-                    可行安排.push(条件安排.安排.clone());
+                    count += 1;
+                    if random_range(0..count) == 0 {
+                        下一个安排 = Some(条件安排.安排);
+                    }
                 }
             }
-            if !可行安排.is_empty() {
-                备选列表.push((字根.clone(), 可行安排));
+            if let Some(下一个安排) = 下一个安排 {
+                决策.元素[元素] = 下一个安排;
+                return 字源决策变化::新建(vec![], vec![], vec![元素]);
             }
         }
-        let (字根, 安排列表) = 备选列表.into_iter().choose(&mut rng).unwrap();
-        决策.元素[字根] = 安排列表.into_iter().choose(&mut rng).unwrap().clone();
-        字源决策变化::新建(vec![], vec![], vec![字根])
+        字源决策变化::无变化()
     }
 }

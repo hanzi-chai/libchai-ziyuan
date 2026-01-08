@@ -6,3 +6,6 @@ o:
 
 p:
 	cargo run --release -- optimize -t 10
+
+f:
+	sudo cargo flamegraph --profile benchmark -- optimize

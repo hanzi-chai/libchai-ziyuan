@@ -299,8 +299,6 @@ impl 字源上下文 {
     pub fn 新建(输入: 默认输入) -> Result<Self, 错误> {
         let 布局 = 输入.配置.form.clone();
         let mut 原始决策 = 布局.mapping;
-        // 去掉只用于前端的字音元素
-        原始决策.retain(|k, _| k.chars().count() == 1);
         let mut 原始决策空间 = 布局.mapping_space.unwrap();
         let 原始变量映射 = 布局.mapping_variables.unwrap();
         let mut 元素转数字 = FxHashMap::default();
@@ -312,7 +310,7 @@ impl 字源上下文 {
                 原始决策.insert(元素.clone(), Mapped::Unused(()));
             }
         }
-        合并初始决策(&mut 原始决策空间, &原始决策);
+        合并初始决策(&mut 原始决策空间, &mut 原始决策);
         展开变量(&mut 原始决策空间, &原始变量映射);
         let (所有元素, 原始元素图) = 拓扑排序(&原始决策空间).unwrap();
         let mut 序号 = 0;
@@ -346,7 +344,9 @@ impl 字源上下文 {
         };
         for 元素名称 in &所有元素 {
             let 序号 = 棱镜.元素转数字[元素名称];
-            决策空间.字根.push(序号);
+            if 元素名称.chars().count() == 1 {
+                决策空间.字根.push(序号);
+            }
             let 原始安排列表 = 原始决策空间[元素名称].clone();
             let 原始安排 = 原始决策[元素名称].clone();
             let mut 安排列表 = vec![];
@@ -589,11 +589,7 @@ impl 字源上下文 {
                     .position(|(x, _)| x == &码表项.name)
                     .unwrap();
                 完整重码组.resize(位置, ("".to_string(), 0));
-                重码.push((
-                    码表项.name.clone(),
-                    码表项.full.clone(),
-                    完整重码组,
-                ));
+                重码.push((码表项.name.clone(), 码表项.full.clone(), 完整重码组));
             }
         }
         writeln!(文件, "# 前 13000 中重码\n")?;
